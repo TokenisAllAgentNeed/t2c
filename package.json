@@ -1,0 +1,87 @@
+{
+  "name": "@token2chat/t2c",
+  "version": "0.2.0-beta.1",
+  "type": "module",
+  "license": "MIT",
+  "description": "t2c - Pay-per-request LLM access via Cashu ecash",
+  "author": "Token2Chat",
+  "homepage": "https://github.com/TokenisAllAgentNeed/t2c#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TokenisAllAgentNeed/t2c.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TokenisAllAgentNeed/t2c/issues"
+  },
+  "keywords": [
+    "llm",
+    "ai",
+    "cashu",
+    "ecash",
+    "bitcoin",
+    "pay-per-request",
+    "openai",
+    "claude",
+    "gpt",
+    "proxy",
+    "cli"
+  ],
+  "bin": {
+    "t2c": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    },
+    "./cashu-store": {
+      "types": "./dist/cashu-store.d.ts",
+      "import": "./dist/cashu-store.js"
+    },
+    "./proxy": {
+      "types": "./dist/proxy.d.ts",
+      "import": "./dist/proxy.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test && rm -f dist/commands/debug.js dist/commands/debug.d.ts dist/commands/debug.js.map dist/commands/debug.d.ts.map",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@cashu/cashu-ts": "^2.5.0",
+    "@cashu/crypto": "^0.3.4",
+    "blessed": "^0.1.81",
+    "blessed-contrib": "^4.11.0",
+    "commander": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.27",
+    "@types/node": "^25.1.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

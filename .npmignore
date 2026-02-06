@@ -1,0 +1,6 @@
+# Debug commands — dev only, never ship
+dist/commands/debug.js
+dist/commands/debug.d.ts
+dist/commands/debug.js.map
+dist/commands/debug.d.ts.map
+src/commands/debug.ts
