@@ -50,6 +50,8 @@ vi.mock("node:fs/promises", async () => {
 });
 
 import fs from "node:fs/promises";
+import os from "node:os";
+import { startProxy } from "../src/proxy.js";
 import { serviceCommand } from "../src/commands/service.js";
 
 const mockFetch = vi.fn();
@@ -274,6 +276,287 @@ describe("serviceCommand", () => {
       await serviceCommand("start", {});
       expect(errOutput).toContain("Failed to start");
       expect(process.exit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  // ── start foreground ──────────────────────────────
+
+  describe("start (foreground)", () => {
+    it("reports already running when health check passes", async () => {
+      mockFetch.mockResolvedValue({ ok: true } as Response);
+
+      await serviceCommand("start", { foreground: true });
+      expect(logOutput).toContain("already running");
+    });
+
+    it("reports already running via T2C_DAEMON env", async () => {
+      const origEnv = process.env.T2C_DAEMON;
+      process.env.T2C_DAEMON = "1";
+
+      mockFetch.mockResolvedValue({ ok: true } as Response);
+
+      await serviceCommand("start", {});
+      expect(logOutput).toContain("already running");
+
+      // Restore env
+      if (origEnv === undefined) {
+        delete process.env.T2C_DAEMON;
+      } else {
+        process.env.T2C_DAEMON = origEnv;
+      }
+    });
+
+    it("starts proxy in foreground when not already running", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+
+      // startProxy returns a handle; the function then awaits forever.
+      // We race against a timeout to avoid hanging.
+      const result = await Promise.race([
+        serviceCommand("start", { foreground: true }),
+        new Promise<string>((r) => setTimeout(() => r("timed-out"), 500)),
+      ]);
+
+      expect(result).toBe("timed-out");
+      expect(logOutput).toContain("Starting proxy in foreground");
+      expect(startProxy).toHaveBeenCalled();
+    });
+  });
+
+  // ── restart ────────────────────────────────────────
+
+  describe("restart", () => {
+    it("stops then starts daemon", async () => {
+      // Stop: no PID (not running)
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("ENOENT"));
+      // Start: health check fails (not running)
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      mockSpawn.mockReturnValue({
+        pid: 77777,
+        unref: vi.fn(),
+      });
+
+      await serviceCommand("restart", {});
+
+      expect(logOutput).toContain("Proxy not running");
+      expect(logOutput).toContain("77777");
+      expect(logOutput).toContain("started");
+    });
+
+    it("stops running process then starts daemon", async () => {
+      // Stop: PID exists, process exits immediately after SIGTERM
+      vi.mocked(fs.readFile)
+        .mockResolvedValueOnce("11111")  // getPid in stopService
+        .mockRejectedValueOnce(new Error("ENOENT"))  // getPid in startDaemon
+      ;
+      vi.mocked(process.kill)
+        .mockReturnValueOnce(true as any)   // getPid check (process exists)
+        .mockReturnValueOnce(true as any)   // SIGTERM send
+        .mockImplementationOnce(() => { throw new Error("ESRCH"); }) // poll: process gone
+      ;
+      // Start: health check fails (not running)
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      mockSpawn.mockReturnValue({
+        pid: 88888,
+        unref: vi.fn(),
+      });
+
+      await serviceCommand("restart", {});
+
+      expect(logOutput).toContain("Stopping proxy");
+      expect(logOutput).toContain("Proxy stopped");
+      expect(logOutput).toContain("88888");
+    });
+  });
+
+  // ── stop edge cases ────────────────────────────────
+
+  describe("stop (edge cases)", () => {
+    it("force kills after timeout when process won't die", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("33333");
+
+      // getPid check passes, SIGTERM succeeds, then process.kill(pid,0) keeps succeeding 30 times (process alive),
+      // then force kill succeeds.
+      const killMock = vi.mocked(process.kill);
+      killMock
+        .mockReturnValueOnce(true as any)   // getPid: process.kill(pid, 0)
+        .mockReturnValueOnce(true as any);  // SIGTERM send
+
+      // The loop checks 30 times with process.kill(pid, 0). All succeed (process still alive).
+      for (let i = 0; i < 30; i++) {
+        killMock.mockReturnValueOnce(true as any);
+      }
+      // SIGKILL
+      killMock.mockReturnValueOnce(true as any);
+
+      await serviceCommand("stop", {});
+
+      expect(process.kill).toHaveBeenCalledWith(33333, "SIGTERM");
+      expect(process.kill).toHaveBeenCalledWith(33333, "SIGKILL");
+      expect(logOutput).toContain("Proxy killed");
+    });
+
+    it("handles error when killing process", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("44444");
+
+      vi.mocked(process.kill)
+        .mockReturnValueOnce(true as any)   // getPid check
+        .mockImplementationOnce(() => { throw new Error("EPERM"); });  // SIGTERM throws
+
+      await serviceCommand("stop", {});
+
+      expect(errOutput).toContain("Failed to stop proxy");
+      expect(errOutput).toContain("EPERM");
+    });
+  });
+
+  // ── install (Linux) ────────────────────────────────
+
+  describe("install (linux)", () => {
+    let platformSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      platformSpy = vi.spyOn(os, "platform").mockReturnValue("linux");
+    });
+
+    afterEach(() => {
+      platformSpy.mockRestore();
+    });
+
+    it("generates and writes systemd unit on linux", async () => {
+      await serviceCommand("install", {});
+
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(fs.writeFile).toHaveBeenCalled();
+      const writeCall = vi.mocked(fs.writeFile).mock.calls[0];
+      const writtenPath = writeCall[0] as string;
+      const writtenContent = writeCall[1] as string;
+
+      expect(writtenPath).toContain("systemd");
+      expect(writtenPath).toContain("t2c-proxy.service");
+      expect(writtenContent).toContain("[Unit]");
+      expect(writtenContent).toContain("Token2Chat Proxy");
+      expect(writtenContent).toContain("[Service]");
+      expect(writtenContent).toContain("[Install]");
+
+      expect(logOutput).toContain("systemd user service");
+      expect(logOutput).toContain("systemctl --user");
+    });
+  });
+
+  // ── install (unsupported platform) ─────────────────
+
+  describe("install (unsupported platform)", () => {
+    let platformSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      platformSpy = vi.spyOn(os, "platform").mockReturnValue("win32");
+    });
+
+    afterEach(() => {
+      platformSpy.mockRestore();
+    });
+
+    it("errors on unsupported platform", async () => {
+      await serviceCommand("install", {});
+
+      expect(errOutput).toContain("Unsupported platform");
+      expect(process.exit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  // ── uninstall (Linux) ──────────────────────────────
+
+  describe("uninstall (linux)", () => {
+    let platformSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      platformSpy = vi.spyOn(os, "platform").mockReturnValue("linux");
+    });
+
+    afterEach(() => {
+      platformSpy.mockRestore();
+    });
+
+    it("successfully uninstalls systemd service", async () => {
+      vi.mocked(fs.unlink).mockResolvedValue(undefined);
+      mockExecSync.mockReturnValue(undefined);
+
+      await serviceCommand("uninstall", {});
+
+      // Should have tried to stop/disable and then unlink
+      expect(mockExecSync).toHaveBeenCalled();
+      expect(fs.unlink).toHaveBeenCalled();
+      expect(logOutput).toContain("Uninstalled systemd");
+    });
+
+    it("reports not installed when ENOENT on linux", async () => {
+      const err = new Error("ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      // execSync for stop/disable may throw (that is caught), but unlink throws ENOENT
+      mockExecSync.mockImplementation(() => { throw new Error("not loaded"); });
+      vi.mocked(fs.unlink).mockRejectedValue(err);
+
+      await serviceCommand("uninstall", {});
+
+      expect(logOutput).toContain("not installed");
+    });
+  });
+
+  // ── uninstall (unsupported platform) ───────────────
+
+  describe("uninstall (unsupported platform)", () => {
+    let platformSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      platformSpy = vi.spyOn(os, "platform").mockReturnValue("win32");
+    });
+
+    afterEach(() => {
+      platformSpy.mockRestore();
+    });
+
+    it("errors on unsupported platform", async () => {
+      await serviceCommand("uninstall", {});
+
+      expect(errOutput).toContain("Unsupported platform");
+      expect(process.exit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  // ── status (Linux) ────────────────────────────────
+
+  describe("status (linux)", () => {
+    let platformSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      platformSpy = vi.spyOn(os, "platform").mockReturnValue("linux");
+    });
+
+    afterEach(() => {
+      platformSpy.mockRestore();
+    });
+
+    it("shows systemd installed when unit file exists", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("ENOENT"));
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+
+      await serviceCommand("status", {});
+
+      expect(logOutput).toContain("linux");
+      expect(logOutput).toContain("Installed");
+      expect(logOutput).toContain("systemd");
+    });
+
+    it("shows systemd not installed when unit file missing", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("ENOENT"));
+      vi.mocked(fs.access).mockRejectedValue(new Error("ENOENT"));
+
+      await serviceCommand("status", {});
+
+      expect(logOutput).toContain("linux");
+      expect(logOutput).toContain("Not installed");
     });
   });
 });

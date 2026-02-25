@@ -1,6 +1,6 @@
 {
   "name": "@token2chat/t2c",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "description": "t2c - Pay-per-request LLM access via Cashu ecash",
@@ -27,7 +27,7 @@
     "cli"
   ],
   "bin": {
-    "t2c": "./dist/index.js"
+    "t2c": "dist/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

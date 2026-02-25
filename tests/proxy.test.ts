@@ -223,4 +223,37 @@ describe("startProxy", () => {
       handle.stop();
     }
   });
+
+  it("throws when wallet path is unwritable", async () => {
+    // Use /dev/null/impossible — cannot mkdir inside /dev/null
+    const badConfig = { ...testConfig, walletPath: "/dev/null/impossible/wallet.json" };
+
+    await expect(startProxy(badConfig, silentLogger)).rejects.toThrow("Cannot start proxy: wallet load failed");
+  });
+
+  it("starts with autoDiscover enabled", async () => {
+    const walletData = {
+      mint: "https://mint.test.local",
+      unit: "usd",
+      proofs: [{ id: "00ad268c4d1f5826", amount: 1000, secret: "s1", C: "02" + "0".repeat(62) }],
+    };
+    await fs.writeFile(testWalletPath, JSON.stringify(walletData));
+
+    const autoDiscoverConfig: T2CConfig = {
+      ...testConfig,
+      autoDiscover: true,
+      discoveryUrl: "https://token2.cash/gates.json",
+    };
+
+    const handle = await startProxy(autoDiscoverConfig, silentLogger);
+    await new Promise((r) => setTimeout(r, 300));
+
+    try {
+      // Should still respond to health check
+      const res = await fetch(`http://127.0.0.1:${testPort}/health`);
+      expect(res.status).toBe(200);
+    } finally {
+      handle.stop();
+    }
+  });
 });

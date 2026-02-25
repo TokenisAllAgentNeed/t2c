@@ -36,6 +36,19 @@ vi.mock("../src/cashu-store.js", () => ({
   },
 }));
 
+// Mock fs/promises for service check
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  return {
+    ...actual,
+    default: {
+      ...actual.default,
+      access: vi.fn(),
+    },
+  };
+});
+
+import fsMod from "node:fs/promises";
 import { doctorCommand } from "../src/commands/doctor.js";
 import { configExists, checkGateHealth, checkMintHealth } from "../src/config.js";
 import { CashuStore } from "../src/cashu-store.js";
@@ -55,6 +68,8 @@ describe("doctorCommand", () => {
     mockedLoad.mockResolvedValue({ balance: 5000, proofCount: 10 } as any);
     // Proxy health check — not running
     mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+    // Service plist/unit file — not found by default
+    vi.mocked(fsMod.access).mockRejectedValue(new Error("ENOENT"));
   });
 
   afterEach(() => {
@@ -161,5 +176,72 @@ describe("doctorCommand", () => {
     vi.mocked(configExists).mockResolvedValueOnce(false);
     await doctorCommand();
     expect(logOutput).toContain("Suggested fixes");
+  });
+
+  it("shows all systems operational when all checks pass", async () => {
+    // Proxy health passes
+    mockFetch.mockResolvedValueOnce({ ok: true });
+    // Service file access succeeds (launchd on darwin, systemd on linux)
+    vi.mocked(fsMod.access).mockResolvedValue(undefined);
+
+    await doctorCommand();
+    expect(logOutput).toContain("All systems operational");
+  });
+
+  describe("checkService platform branches", () => {
+    it("shows service installed on darwin when plist exists", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      vi.mocked(fsMod.access).mockResolvedValue(undefined);
+
+      await doctorCommand();
+
+      if (process.platform === "darwin") {
+        expect(logOutput).toContain("Installed (launchd)");
+      }
+    });
+
+    it("shows service not installed on darwin when plist missing", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      vi.mocked(fsMod.access).mockRejectedValue(new Error("ENOENT"));
+
+      await doctorCommand();
+
+      if (process.platform === "darwin") {
+        expect(logOutput).toContain("Not installed");
+        expect(logOutput).toContain("t2c service install");
+      }
+    });
+
+    it("shows service status for linux when systemd unit exists", async () => {
+      const platformSpy = vi.spyOn(os, "platform").mockReturnValue("linux");
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      vi.mocked(fsMod.access).mockResolvedValue(undefined);
+
+      await doctorCommand();
+      expect(logOutput).toContain("Installed (systemd)");
+
+      platformSpy.mockRestore();
+    });
+
+    it("shows service not installed for linux when systemd unit missing", async () => {
+      const platformSpy = vi.spyOn(os, "platform").mockReturnValue("linux");
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+      vi.mocked(fsMod.access).mockRejectedValue(new Error("ENOENT"));
+
+      await doctorCommand();
+      expect(logOutput).toContain("Not installed");
+
+      platformSpy.mockRestore();
+    });
+
+    it("shows unsupported platform for non-darwin/linux", async () => {
+      const platformSpy = vi.spyOn(os, "platform").mockReturnValue("win32");
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+
+      await doctorCommand();
+      expect(logOutput).toContain("Unsupported platform");
+
+      platformSpy.mockRestore();
+    });
   });
 });

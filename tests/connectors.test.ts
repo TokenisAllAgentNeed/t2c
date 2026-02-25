@@ -248,6 +248,12 @@ describe("CursorConnector", () => {
     expect(output).toContain("OpenAI Base URL");
     expect(output).toContain(`${testConfig.proxyPort}`);
   });
+
+  it("verify() returns boolean", async () => {
+    const { cursorConnector } = await import("../src/connectors/cursor.js");
+    const result = await cursorConnector.verify!();
+    expect(typeof result).toBe("boolean");
+  });
 });
 
 describe("EnvConnector", () => {
