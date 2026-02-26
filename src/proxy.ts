@@ -142,7 +142,7 @@ export async function startProxy(
       const balanceBefore = paymentService.getBalance();
 
       await pricingCache.get(); // Ensure cache is populated
-      const price = pricingCache.getPrice(requestedModel);
+      const price = pricingCache.estimatePrice(requestedModel, parsed);
 
       // Check balance using PaymentService (throws InsufficientBalanceError)
       try {
@@ -168,7 +168,7 @@ export async function startProxy(
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         // Pick gate for this attempt (rotate through available gates)
         const currentGateUrl = gateUrls[attempt % gateUrls.length];
-        const currentPrice = pricingCache.getPrice(requestedModel);
+        const currentPrice = pricingCache.estimatePrice(requestedModel, parsed);
 
         // Select token using PaymentService
         const { token, balanceAfter } = await paymentService.selectToken(currentPrice);

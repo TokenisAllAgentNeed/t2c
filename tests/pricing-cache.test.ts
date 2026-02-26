@@ -1,6 +1,6 @@
 /**
  * Unit tests for PricingCache class.
- * Tests caching, TTL, fetching, and price lookup.
+ * Tests caching, TTL, fetching, price lookup, and token estimation.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PricingCache } from "../src/proxy/pricing.js";
@@ -22,17 +22,38 @@ describe("PricingCache", () => {
     return new PricingCache(gateUrl, { ttlMs, fetchFn: mockFetch });
   }
 
+  /** Helper: mock Gate response with per_token models */
+  function mockPerTokenResponse(models: Record<string, { input_per_million: number; output_per_million: number }>) {
+    const mapped: Record<string, any> = {};
+    for (const [k, v] of Object.entries(models)) {
+      mapped[k] = { mode: "per_token", ...v };
+    }
+    return {
+      ok: true,
+      json: async () => ({ models: mapped }),
+    };
+  }
+
+  /** Helper: mock Gate response with per_request models */
+  function mockPerRequestResponse(models: Record<string, number>) {
+    const mapped: Record<string, any> = {};
+    for (const [k, v] of Object.entries(models)) {
+      mapped[k] = { mode: "per_request", per_request: v };
+    }
+    return {
+      ok: true,
+      json: async () => ({ models: mapped }),
+    };
+  }
+
   describe("fetch", () => {
     it("fetches pricing from gate URL", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          models: {
-            "gpt-4o": { per_request: 100 },
-            "claude-3": { per_request: 200 },
-          },
-        }),
-      });
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "gpt-4o": { input_per_million: 250000, output_per_million: 1000000 },
+          "claude-3": { input_per_million: 300000, output_per_million: 1500000 },
+        })
+      );
 
       const cache = createCache();
       await cache.refresh();
@@ -40,22 +61,30 @@ describe("PricingCache", () => {
       expect(mockFetch).toHaveBeenCalledWith(`${gateUrl}/v1/pricing`);
     });
 
-    it("extracts per_request prices from response", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          models: {
-            "gpt-4o": { per_request: 100 },
-            "claude-3": { per_request: 200 },
-          },
-        }),
-      });
+    it("stores per_token pricing from response", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "gpt-4o": { input_per_million: 15000, output_per_million: 60000 },
+        })
+      );
 
       const cache = createCache();
       await cache.refresh();
 
+      // estimatePrice should use the stored per_token pricing (not DEFAULT_PRICE)
+      const price = cache.estimatePrice("gpt-4o", { messages: [{ role: "user", content: "hi" }], max_tokens: 100 });
+      expect(price).toBeGreaterThan(0);
+      expect(price).not.toBe(500); // should not be DEFAULT_PRICE
+    });
+
+    it("stores per_request pricing from response", async () => {
+      mockFetch.mockResolvedValueOnce(mockPerRequestResponse({ "gpt-4o": 100 }));
+
+      const cache = createCache();
+      await cache.refresh();
+
+      expect(cache.estimatePrice("gpt-4o", {})).toBe(100);
       expect(cache.getPrice("gpt-4o")).toBe(100);
-      expect(cache.getPrice("claude-3")).toBe(200);
     });
 
     it("returns empty record on fetch failure", async () => {
@@ -79,10 +108,9 @@ describe("PricingCache", () => {
 
   describe("caching", () => {
     it("does not refetch within TTL", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ models: { "model-a": { per_request: 50 } } }),
-      });
+      mockFetch.mockResolvedValue(
+        mockPerTokenResponse({ "model-a": { input_per_million: 50000, output_per_million: 200000 } })
+      );
 
       const cache = createCache(60_000); // 60s TTL
       await cache.get();
@@ -93,10 +121,9 @@ describe("PricingCache", () => {
     });
 
     it("refetches after TTL expires", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ models: { "model-a": { per_request: 50 } } }),
-      });
+      mockFetch.mockResolvedValue(
+        mockPerTokenResponse({ "model-a": { input_per_million: 50000, output_per_million: 200000 } })
+      );
 
       const cache = createCache(60_000);
       await cache.get();
@@ -131,13 +158,8 @@ describe("PricingCache", () => {
   });
 
   describe("getPrice", () => {
-    it("returns exact match price", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          models: { "gpt-4o": { per_request: 100 } },
-        }),
-      });
+    it("returns per_request price for exact match", async () => {
+      mockFetch.mockResolvedValueOnce(mockPerRequestResponse({ "gpt-4o": 100 }));
 
       const cache = createCache();
       await cache.refresh();
@@ -145,16 +167,8 @@ describe("PricingCache", () => {
       expect(cache.getPrice("gpt-4o")).toBe(100);
     });
 
-    it("returns wildcard price for unknown model", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          models: {
-            "gpt-4o": { per_request: 100 },
-            "*": { per_request: 300 },
-          },
-        }),
-      });
+    it("returns wildcard per_request price for unknown model", async () => {
+      mockFetch.mockResolvedValueOnce(mockPerRequestResponse({ "gpt-4o": 100, "*": 300 }));
 
       const cache = createCache();
       await cache.refresh();
@@ -162,13 +176,20 @@ describe("PricingCache", () => {
       expect(cache.getPrice("unknown-model")).toBe(300);
     });
 
+    it("returns default 500 for per_token models (getPrice is simple fallback)", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({ "gpt-4o": { input_per_million: 15000, output_per_million: 60000 } })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      // getPrice doesn't know about per_token, returns default
+      expect(cache.getPrice("gpt-4o")).toBe(500);
+    });
+
     it("returns default 500 when no wildcard and unknown model", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          models: { "gpt-4o": { per_request: 100 } },
-        }),
-      });
+      mockFetch.mockResolvedValueOnce(mockPerRequestResponse({ "gpt-4o": 100 }));
 
       const cache = createCache();
       await cache.refresh();
@@ -194,12 +215,164 @@ describe("PricingCache", () => {
     });
   });
 
+  describe("estimatePrice", () => {
+    it("estimates per_token pricing for Opus short message (~31K+ units)", async () => {
+      // Opus: input 1,500,000 / output 7,500,000 per million tokens
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "anthropic/claude-opus-4-20250514": { input_per_million: 1500000, output_per_million: 7500000 },
+        })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      const price = cache.estimatePrice("anthropic/claude-opus-4-20250514", {
+        messages: [{ role: "user", content: "Hello, world!" }],
+        max_tokens: 4096,
+      });
+
+      // input: "Hello, world!" = 13 chars → ceil(13/4 * 1.1) = ceil(3.575) = 4 tokens, min 100 → 100
+      // output: 4096 tokens
+      // cost = ceil((100 * 1500000 + 4096 * 7500000) / 1000000) = ceil(150 + 30720) = 30870
+      expect(price).toBeGreaterThanOrEqual(30000);
+      expect(price).not.toBe(500); // definitely not the default
+    });
+
+    it("returns fixed price for per_request pricing", async () => {
+      mockFetch.mockResolvedValueOnce(mockPerRequestResponse({ "fixed-model": 42 }));
+
+      const cache = createCache();
+      await cache.refresh();
+
+      const price = cache.estimatePrice("fixed-model", {
+        messages: [{ role: "user", content: "Hello" }],
+        max_tokens: 1000,
+      });
+
+      expect(price).toBe(42);
+    });
+
+    it("uses MIN_TOKEN_ESTIMATE when no messages provided", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "model-a": { input_per_million: 100000, output_per_million: 500000 },
+        })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      const price = cache.estimatePrice("model-a", {});
+
+      // input: MIN_TOKEN_ESTIMATE=100, output: DEFAULT_MAX_TOKENS=4096
+      // cost = ceil((100 * 100000 + 4096 * 500000) / 1000000) = ceil(10 + 2048) = 2058
+      expect(price).toBe(2058);
+    });
+
+    it("uses MIN_TOKEN_ESTIMATE when messages array is empty", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "model-a": { input_per_million: 100000, output_per_million: 500000 },
+        })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      const priceNoMsg = cache.estimatePrice("model-a", { messages: [] });
+      const priceUndef = cache.estimatePrice("model-a", {});
+
+      expect(priceNoMsg).toBe(priceUndef);
+    });
+
+    it("accounts for images in messages", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "model-a": { input_per_million: 100000, output_per_million: 500000 },
+        })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      const priceWithImage = cache.estimatePrice("model-a", {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "What is this?" },
+              { type: "image_url", image_url: { url: "data:..." } },
+            ],
+          },
+        ],
+        max_tokens: 1000,
+      });
+
+      const priceWithoutImage = cache.estimatePrice("model-a", {
+        messages: [{ role: "user", content: "What is this?" }],
+        max_tokens: 1000,
+      });
+
+      // Image adds IMAGE_TOKEN_ESTIMATE=800 tokens worth of input
+      expect(priceWithImage).toBeGreaterThan(priceWithoutImage);
+    });
+
+    it("falls back to wildcard for unknown model", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "known-model": { input_per_million: 15000, output_per_million: 60000 },
+          "*": { input_per_million: 100000, output_per_million: 500000 },
+        })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      const price = cache.estimatePrice("unknown-model", {
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+      });
+
+      // Should use wildcard pricing, not DEFAULT_PRICE
+      // input: min 100 tokens, output: 100 tokens
+      // cost = ceil((100 * 100000 + 100 * 500000) / 1000000) = ceil(10 + 50) = 60
+      expect(price).toBe(60);
+    });
+
+    it("falls back to DEFAULT_PRICE when cache is empty", () => {
+      const cache = createCache();
+      const price = cache.estimatePrice("any-model", {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      expect(price).toBe(500);
+    });
+
+    it("returns at least 1", async () => {
+      // Very cheap model with tiny request
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "cheap-model": { input_per_million: 1, output_per_million: 1 },
+        })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      const price = cache.estimatePrice("cheap-model", {
+        messages: [{ role: "user", content: "x" }],
+        max_tokens: 1,
+      });
+
+      expect(price).toBeGreaterThanOrEqual(1);
+    });
+  });
+
   describe("invalidate", () => {
     it("clears cache and forces refetch", async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ models: { "model-a": { per_request: 50 } } }),
-      });
+      mockFetch.mockResolvedValue(
+        mockPerTokenResponse({ "model-a": { input_per_million: 50000, output_per_million: 200000 } })
+      );
 
       const cache = createCache(60_000);
       await cache.get();
@@ -211,10 +384,7 @@ describe("PricingCache", () => {
     });
 
     it("getPrice returns default after invalidate", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ models: { "model-a": { per_request: 50 } } }),
-      });
+      mockFetch.mockResolvedValueOnce(mockPerRequestResponse({ "model-a": 50 }));
 
       const cache = createCache();
       await cache.refresh();
@@ -223,20 +393,29 @@ describe("PricingCache", () => {
       cache.invalidate();
       expect(cache.getPrice("model-a")).toBe(500);
     });
+
+    it("estimatePrice returns DEFAULT_PRICE after invalidate", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({ "model-a": { input_per_million: 100000, output_per_million: 500000 } })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      cache.invalidate();
+      expect(cache.estimatePrice("model-a", { messages: [{ role: "user", content: "hi" }] })).toBe(500);
+    });
   });
 
   describe("models list", () => {
     it("returns list of available models", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          models: {
-            "gpt-4o": { per_request: 100 },
-            "claude-3": { per_request: 200 },
-            "*": { per_request: 500 },
-          },
-        }),
-      });
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "gpt-4o": { input_per_million: 250000, output_per_million: 1000000 },
+          "claude-3": { input_per_million: 300000, output_per_million: 1500000 },
+          "*": { input_per_million: 100000, output_per_million: 500000 },
+        })
+      );
 
       const cache = createCache();
       await cache.refresh();
@@ -262,10 +441,9 @@ describe("PricingCache", () => {
       });
 
       mockFetch.mockReturnValueOnce(
-        delayedResponse.then(() => ({
-          ok: true,
-          json: async () => ({ models: { "model-a": { per_request: 50 } } }),
-        }))
+        delayedResponse.then(() =>
+          mockPerTokenResponse({ "model-a": { input_per_million: 50000, output_per_million: 200000 } })
+        )
       );
 
       const cache = createCache();
@@ -282,6 +460,34 @@ describe("PricingCache", () => {
 
       // Should only have fetched once
       expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("backward compatibility (per_request format)", () => {
+    it("handles mixed per_token and per_request models", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          models: {
+            "per-token-model": { mode: "per_token", input_per_million: 100000, output_per_million: 500000 },
+            "per-request-model": { mode: "per_request", per_request: 200 },
+          },
+        }),
+      });
+
+      const cache = createCache();
+      await cache.refresh();
+
+      // per_request model returns fixed price
+      expect(cache.estimatePrice("per-request-model", { messages: [{ role: "user", content: "hi" }] })).toBe(200);
+
+      // per_token model estimates from body
+      const tokenPrice = cache.estimatePrice("per-token-model", {
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+      });
+      expect(tokenPrice).toBeGreaterThan(0);
+      expect(tokenPrice).not.toBe(500);
     });
   });
 });
