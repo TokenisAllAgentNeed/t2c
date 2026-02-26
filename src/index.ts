@@ -5,6 +5,9 @@
  * Pay-per-request LLM access via Cashu ecash
  */
 import { Command } from "commander";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { initCommand } from "./commands/init.js";
 import { connectCommand } from "./commands/connect.js";
 import { setupCommand } from "./commands/setup.js";
@@ -20,12 +23,17 @@ import { monitorCommand } from "./commands/monitor.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 // debug command is loaded dynamically — excluded from npm package
 
+// Read version from package.json
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
+
 const program = new Command();
 
 program
   .name("t2c")
   .description("Pay-per-request LLM access via Cashu ecash")
-  .version("0.1.0");
+  .version(packageJson.version);
 
 // t2c init - Core initialization
 program
