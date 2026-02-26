@@ -88,6 +88,16 @@ export class CashuStore {
     try {
       const raw = await readFile(path, "utf-8");
       const data = JSON.parse(raw) as CashuStoreData;
+
+      // Migrate legacy wallets that stored unit as "sat"
+      // Our mint only supports USD keysets
+      if (data.unit === "sat") {
+        data.unit = "usd";
+        const store = new CashuStore(path, data);
+        await store.save();
+        return store;
+      }
+
       return new CashuStore(path, data);
     } catch {
       const data: CashuStoreData = {

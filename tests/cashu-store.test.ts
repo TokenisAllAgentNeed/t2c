@@ -49,6 +49,28 @@ describe("CashuStore", () => {
       expect(wallet.mint).toBe("https://mint.example.com");
     });
 
+    it("migrates legacy wallet with unit=sat to usd", async () => {
+      const legacyData = {
+        mint: "https://mint.token2chat.com",
+        unit: "sat",
+        proofs: [
+          { id: "00ad268c4d1f5826", amount: 100, secret: "s1", C: "02" + "0".repeat(62) },
+        ],
+      };
+      await fs.writeFile(testWalletPath, JSON.stringify(legacyData));
+
+      const wallet = await CashuStore.load(testWalletPath);
+      expect(wallet.balance).toBe(100);
+
+      // Unit should be migrated
+      const exported = wallet.exportData();
+      expect(exported.unit).toBe("usd");
+
+      // File should be updated on disk
+      const raw = JSON.parse(await fs.readFile(testWalletPath, "utf-8"));
+      expect(raw.unit).toBe("usd");
+    });
+
     it("handles corrupted wallet file", async () => {
       await fs.writeFile(testWalletPath, "not valid json");
 
