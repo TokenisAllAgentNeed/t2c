@@ -17,6 +17,7 @@ import { doctorCommand } from "./commands/doctor.js";
 import { balanceCommand } from "./commands/balance.js";
 import { auditCommand } from "./commands/audit.js";
 import { monitorCommand } from "./commands/monitor.js";
+import { uninstallCommand } from "./commands/uninstall.js";
 // debug command is loaded dynamically — excluded from npm package
 
 const program = new Command();
@@ -137,6 +138,14 @@ program
   .description("Live TUI dashboard for Gate, Mint, Proxy, and Funds")
   .option("-r, --refresh <seconds>", "Refresh interval in seconds", "5")
   .action(monitorCommand);
+
+// t2c uninstall - Remove t2c (preserving wallet)
+program
+  .command("uninstall")
+  .description("Uninstall t2c: stop service, remove config/data (wallet preserved)")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .option("--remove-openclaw", "Also remove token2chat provider from OpenClaw config")
+  .action((opts) => uninstallCommand({ yes: !!opts.yes, removeOpenclaw: !!opts.removeOpenclaw }));
 
 // t2c config - Generate config for AI tools
 const config = program
