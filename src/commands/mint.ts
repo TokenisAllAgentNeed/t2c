@@ -5,9 +5,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadConfig, resolveHome, CONFIG_DIR, formatUnits } from "../config.js";
 import { CashuStore } from "../cashu-store.js";
+import { scanDeposits, CHAIN_CONFIGS, type DepositTx } from "../chain-scan.js";
 
-interface MintOptions {
+export interface MintOptions {
   check?: boolean;
+  scan?: boolean;
+  usdc?: boolean;
 }
 
 // Fallback deposit address (Mint's EVM address for USDC/USDT)
@@ -20,6 +23,10 @@ const SUPPORTED_CHAINS = [
   { name: "Arbitrum", chainId: 42161, tokens: ["USDC", "USDT"] },
   { name: "BNB Chain", chainId: 56, tokens: ["USDC", "USDT"] },
 ];
+
+// 1 USDC (1000000 base units) = 100000 ecash units
+const USDC_RATE = 100_000;
+const USDC_BASE = 1_000_000;
 
 // Path to store pending quotes
 const PENDING_QUOTES_PATH = path.join(CONFIG_DIR, "pending-quotes.json");
@@ -65,6 +72,147 @@ async function fetchDepositAddress(mintUrl: string): Promise<string> {
   return FALLBACK_DEPOSIT_ADDRESS;
 }
 
+function formatTokenAmount(amount: number, decimals: number): string {
+  const value = amount / Math.pow(10, decimals);
+  return value.toFixed(decimals);
+}
+
+function baseUnitsToEcashUnits(baseUnits: number, decimals: number): number {
+  // baseUnits / 10^decimals gives token amount (e.g. 1.0 USDC)
+  // multiply by USDC_RATE to get ecash units
+  return Math.floor((baseUnits / Math.pow(10, decimals)) * USDC_RATE);
+}
+
+// ── --scan: Scan chains for deposits ───────────────────────────
+
+async function handleScan(mintUrl: string): Promise<DepositTx[]> {
+  const depositAddress = await fetchDepositAddress(mintUrl);
+  const shortAddr = depositAddress.slice(0, 6) + "..." + depositAddress.slice(-4);
+
+  console.log(`\n🔍 Scanning chains for deposits to ${shortAddr}\n`);
+
+  const deposits = await scanDeposits(depositAddress, CHAIN_CONFIGS);
+
+  // Group by chain
+  const byChain = new Map<string, DepositTx[]>();
+  for (const chain of CHAIN_CONFIGS) {
+    byChain.set(chain.name, []);
+  }
+  for (const d of deposits) {
+    const list = byChain.get(d.chain);
+    if (list) list.push(d);
+  }
+
+  for (const [chainName, txs] of byChain) {
+    if (txs.length > 0) {
+      console.log(`  ${chainName}:`);
+      for (const tx of txs) {
+        const shortTx = tx.txHash.slice(0, 10) + "..." + tx.txHash.slice(-6);
+        console.log(`    ✅ ${formatTokenAmount(tx.amount, tx.decimals)} ${tx.token} — tx ${shortTx} (block ${tx.blockNumber})`);
+      }
+    } else {
+      console.log(`  ${chainName}: no deposits found`);
+    }
+    console.log("");
+  }
+
+  const chainCount = new Set(deposits.map((d) => d.chain)).size;
+  console.log(`Found ${deposits.length} deposit(s) on ${chainCount} chain(s).\n`);
+
+  return deposits;
+}
+
+// ── --usdc: Full deposit → mint flow ───────────────────────────
+
+async function handleUsdc(wallet: CashuStore, mintUrl: string): Promise<void> {
+  // 1. Scan for deposits
+  const deposits = await handleScan(mintUrl);
+
+  if (deposits.length === 0) {
+    console.log("No deposits to mint from. Send USDC/USDT first.\n");
+    return;
+  }
+
+  // 2. Select deposit (auto-select if only one)
+  let selected: DepositTx;
+  if (deposits.length === 1) {
+    selected = deposits[0];
+    console.log(`Auto-selecting: ${formatTokenAmount(selected.amount, selected.decimals)} ${selected.token} on ${selected.chain}\n`);
+  } else {
+    console.log("Multiple deposits found. Select one:\n");
+    for (let i = 0; i < deposits.length; i++) {
+      const d = deposits[i];
+      console.log(`  [${i + 1}] ${formatTokenAmount(d.amount, d.decimals)} ${d.token} on ${d.chain} (tx ${d.txHash.slice(0, 10)}...)`);
+    }
+    console.log("");
+
+    // Read selection from stdin
+    const readline = await import("node:readline");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolve) => {
+      rl.question("Select deposit [1]: ", (ans) => {
+        rl.close();
+        resolve(ans.trim() || "1");
+      });
+    });
+
+    const idx = parseInt(answer, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= deposits.length) {
+      console.error("Invalid selection.");
+      process.exit(1);
+      return;
+    }
+    selected = deposits[idx];
+  }
+
+  // 3. Calculate ecash units
+  const ecashUnits = baseUnitsToEcashUnits(selected.amount, selected.decimals);
+  if (ecashUnits <= 0) {
+    console.error("Deposit amount too small to mint.");
+    process.exit(1);
+    return;
+  }
+
+  console.log(`Requesting mint quote for ${formatUnits(ecashUnits)}...\n`);
+
+  // 4. Get quote from mint
+  const quoteRes = await fetch(`${mintUrl}/v1/mint/quote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      amount: ecashUnits,
+      chain: selected.chain,
+      token: selected.token,
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!quoteRes.ok) {
+    const body = await quoteRes.text().catch(() => "");
+    console.error(`Failed to get mint quote (${quoteRes.status}): ${body}`);
+    process.exit(1);
+    return;
+  }
+
+  const quote = (await quoteRes.json()) as { quote: string };
+
+  // 5. Mint from deposit
+  console.log(`Minting ${formatUnits(ecashUnits)} from ${selected.token} deposit...\n`);
+
+  try {
+    const minted = await wallet.mintFromDeposit(quote.quote, selected.txHash, ecashUnits);
+    console.log(`🎉 Successfully minted ${formatUnits(minted)}`);
+    console.log(`New balance: ${formatUnits(wallet.balance)}\n`);
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    console.error(`Failed to mint from deposit: ${errMsg}`);
+    process.exit(1);
+    return;
+  }
+}
+
+// ── Main command ───────────────────────────────────────────────
+
 export async function mintCommand(
   amount: string | undefined,
   opts: MintOptions,
@@ -85,6 +233,18 @@ export async function mintCommand(
 
   console.log("\n🎟️  Token2Chat Funding\n");
   console.log(`Current balance: ${formatUnits(currentBalance)}\n`);
+
+  // --scan: just scan and display
+  if (opts.scan) {
+    await handleScan(config.mintUrl);
+    return;
+  }
+
+  // --usdc: full deposit → mint flow
+  if (opts.usdc) {
+    await handleUsdc(wallet, config.mintUrl);
+    return;
+  }
 
   if (opts.check) {
     // Check for pending Lightning quotes and mint paid ones

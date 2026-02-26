@@ -10,8 +10,10 @@ import {
   CashuMint,
   CashuWallet,
   MintQuoteState,
+  OutputData,
   getEncodedTokenV4,
   type Proof,
+  type SerializedBlindedSignature,
 } from "@cashu/cashu-ts";
 
 export interface CashuStoreData {
@@ -251,6 +253,39 @@ export class CashuStore {
       }
 
       const proofs = await wallet.mintProofs(amount, quoteId);
+      this.data.proofs.push(...proofs);
+      await this.save();
+
+      return proofs.reduce((s, p) => s + p.amount, 0);
+    });
+  }
+
+  /**
+   * Mint ecash from an on-chain USDC/USDT deposit.
+   * Creates blinded outputs, POSTs to /v1/mint/deposit, unblinds signatures.
+   */
+  async mintFromDeposit(quoteId: string, txHash: string, amount: number): Promise<number> {
+    return this.mutex.lock(async () => {
+      const wallet = await this.getCashuWallet();
+      const keys = await wallet.getKeys();
+      const outputData = OutputData.createRandomData(amount, keys);
+      const blindedMessages = outputData.map((o) => o.blindedMessage);
+
+      const res = await fetch(`${this.data.mint}/v1/mint/deposit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quote: quoteId, tx_hash: txHash, outputs: blindedMessages }),
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Mint deposit failed (${res.status}): ${body}`);
+      }
+
+      const data = (await res.json()) as { signatures: SerializedBlindedSignature[] };
+      const proofs = outputData.map((o, i) => o.toProof(data.signatures[i], keys));
+
       this.data.proofs.push(...proofs);
       await this.save();
 

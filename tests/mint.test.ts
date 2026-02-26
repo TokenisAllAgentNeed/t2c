@@ -30,8 +30,18 @@ vi.mock("../src/cashu-store.js", () => ({
       proofCount: 10,
       mintFromQuote: vi.fn(),
       createMintQuote: vi.fn(),
+      mintFromDeposit: vi.fn(),
     }),
   },
+}));
+
+vi.mock("../src/chain-scan.js", () => ({
+  scanDeposits: vi.fn(),
+  CHAIN_CONFIGS: [
+    { name: "Base", rpcUrl: "https://base.drpc.org", tokens: [{ symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 }] },
+    { name: "Ethereum", rpcUrl: "https://eth.drpc.org", tokens: [{ symbol: "USDC", address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", decimals: 6 }] },
+    { name: "Arbitrum", rpcUrl: "https://arbitrum.drpc.org", tokens: [{ symbol: "USDC", address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", decimals: 6 }] },
+  ],
 }));
 
 vi.mock("node:fs/promises", async () => {
@@ -49,6 +59,9 @@ vi.mock("node:fs/promises", async () => {
 import fs from "node:fs/promises";
 import { mintCommand } from "../src/commands/mint.js";
 import { CashuStore } from "../src/cashu-store.js";
+import { scanDeposits } from "../src/chain-scan.js";
+
+const mockScanDeposits = vi.mocked(scanDeposits);
 
 describe("mintCommand", () => {
   let logOutput: string;
@@ -63,9 +76,10 @@ describe("mintCommand", () => {
   function setupWallet(overrides: Record<string, unknown> = {}) {
     const mintFromQuote = vi.fn();
     const createMintQuote = vi.fn();
-    const wallet = { balance: 5000, proofCount: 10, mintFromQuote, createMintQuote, ...overrides };
+    const mintFromDeposit = vi.fn();
+    const wallet = { balance: 5000, proofCount: 10, mintFromQuote, createMintQuote, mintFromDeposit, ...overrides };
     mockedLoad.mockResolvedValue(wallet as any);
-    return { mintFromQuote, createMintQuote };
+    return { mintFromQuote, createMintQuote, mintFromDeposit };
   }
 
   beforeEach(() => {
@@ -77,6 +91,7 @@ describe("mintCommand", () => {
     console.warn = (...args) => { warnOutput += args.join(" ") + "\n"; };
     process.exit = vi.fn() as unknown as typeof process.exit;
     mockFetch.mockReset();
+    mockScanDeposits.mockReset();
     vi.mocked(fs.readFile).mockReset();
     vi.mocked(fs.writeFile).mockReset().mockResolvedValue(undefined);
     vi.mocked(fs.mkdir).mockReset().mockResolvedValue(undefined as any);
@@ -231,6 +246,128 @@ describe("mintCommand", () => {
 
       await mintCommand("10000", {});
       expect(errOutput).toContain("Failed to create Lightning invoice");
+      expect(process.exit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  // ── --scan mode ──────────────────────────────────
+
+  describe("--scan mode", () => {
+    it("triggers chain scan and displays results", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ deposit_address: "0xDC20821A78C4e1c586BE317e87A12f690E94E6c6" }),
+      } as Response);
+      mockScanDeposits.mockResolvedValueOnce([
+        { txHash: "0xaf44ca7b1234567890", amount: 1000000, decimals: 6, token: "USDC", chain: "Base", blockNumber: 42655864 },
+      ]);
+
+      await mintCommand(undefined, { scan: true });
+      expect(logOutput).toContain("Scanning chains");
+      expect(logOutput).toContain("USDC");
+      expect(logOutput).toContain("1 deposit(s)");
+    });
+
+    it("shows no deposits message when empty", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ deposit_address: "0xDC20821A78C4e1c586BE317e87A12f690E94E6c6" }),
+      } as Response);
+      mockScanDeposits.mockResolvedValueOnce([]);
+
+      await mintCommand(undefined, { scan: true });
+      expect(logOutput).toContain("Scanning chains");
+      expect(logOutput).toContain("0 deposit(s)");
+    });
+  });
+
+  // ── --usdc mode ─────────────────────────────────
+
+  describe("--usdc mode", () => {
+    it("shows no deposits message when scan returns empty", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ deposit_address: "0xDC20821A78C4e1c586BE317e87A12f690E94E6c6" }),
+      } as Response);
+      mockScanDeposits.mockResolvedValueOnce([]);
+
+      await mintCommand(undefined, { usdc: true });
+      expect(logOutput).toContain("No deposits to mint");
+    });
+
+    it("mints from single USDC deposit", async () => {
+      const { mintFromDeposit } = setupWallet({ balance: 105000 });
+      mintFromDeposit.mockResolvedValueOnce(100000);
+
+      // fetchDepositAddress call
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ deposit_address: "0xDC20821A78C4e1c586BE317e87A12f690E94E6c6" }),
+        } as Response);
+
+      mockScanDeposits.mockResolvedValueOnce([
+        { txHash: "0xaf44ca7b1234567890", amount: 1000000, decimals: 6, token: "USDC", chain: "Base", blockNumber: 42655864 },
+      ]);
+
+      // Quote request
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ quote: "deposit-quote-123" }),
+      } as Response);
+
+      await mintCommand(undefined, { usdc: true });
+      expect(logOutput).toContain("Auto-selecting");
+      expect(logOutput).toContain("Successfully minted");
+      expect(mintFromDeposit).toHaveBeenCalledWith("deposit-quote-123", "0xaf44ca7b1234567890", 100000);
+    });
+
+    it("handles mint deposit failure", async () => {
+      const { mintFromDeposit } = setupWallet();
+      mintFromDeposit.mockRejectedValueOnce(new Error("already redeemed"));
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ deposit_address: "0xDC20821A78C4e1c586BE317e87A12f690E94E6c6" }),
+        } as Response);
+
+      mockScanDeposits.mockResolvedValueOnce([
+        { txHash: "0xtx123", amount: 1000000, decimals: 6, token: "USDC", chain: "Base", blockNumber: 100 },
+      ]);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ quote: "q1" }),
+      } as Response);
+
+      await mintCommand(undefined, { usdc: true });
+      expect(errOutput).toContain("Failed to mint from deposit");
+      expect(errOutput).toContain("already redeemed");
+      expect(process.exit).toHaveBeenCalledWith(1);
+    });
+
+    it("handles quote request failure", async () => {
+      setupWallet();
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ deposit_address: "0xDC20821A78C4e1c586BE317e87A12f690E94E6c6" }),
+        } as Response);
+
+      mockScanDeposits.mockResolvedValueOnce([
+        { txHash: "0xtx123", amount: 1000000, decimals: 6, token: "USDC", chain: "Base", blockNumber: 100 },
+      ]);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => "internal error",
+      } as Response);
+
+      await mintCommand(undefined, { usdc: true });
+      expect(errOutput).toContain("Failed to get mint quote");
       expect(process.exit).toHaveBeenCalledWith(1);
     });
   });

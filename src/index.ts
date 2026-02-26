@@ -100,6 +100,8 @@ program
   .command("mint [amount]")
   .description("Show deposit address or mint ecash from pending deposits")
   .option("--check", "Check for pending deposits and mint")
+  .option("--scan", "Scan EVM chains for recent USDC/USDT deposits")
+  .option("--usdc", "Mint ecash from on-chain USDC/USDT deposit")
   .action(mintCommand);
 
 // t2c recover - Recover failed tokens
