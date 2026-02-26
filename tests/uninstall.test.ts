@@ -289,7 +289,12 @@ describe("t2c uninstall", () => {
   describe("OpenClaw integration removal", () => {
     it("removes token2chat provider from openclaw.json when --remove-openclaw", async () => {
       vi.mocked(fs.access).mockResolvedValue(undefined);
-      vi.mocked(fs.readdir).mockResolvedValue(["config.json"] as any);
+      vi.mocked(fs.readdir).mockImplementation(async (p) => {
+        const s = String(p);
+        if (s.endsWith(".t2c") || s.endsWith("t2c-test/.t2c")) return ["config.json"] as any;
+        if (s.includes("/agents")) return [] as any;
+        return [] as any;
+      });
       
       const openclawConfig = {
         models: {
@@ -317,6 +322,114 @@ describe("t2c uninstall", () => {
       const written = JSON.parse(openclawWrite![1] as string);
       expect(written.models.providers.token2chat).toBeUndefined();
       expect(written.models.providers.anthropic).toBeDefined();
+    });
+
+    it("removes token2chat from agents.defaults.model.fallbacks", async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.readdir).mockImplementation(async (p) => {
+        const s = String(p);
+        if (s.endsWith(".t2c") || s.endsWith("t2c-test/.t2c")) return ["config.json"] as any;
+        if (s.includes("/agents")) return [] as any;
+        return [] as any;
+      });
+
+      const openclawConfig = {
+        agents: {
+          defaults: {
+            model: {
+              primary: "anthropic/claude-opus-4",
+              fallbacks: [
+                "token2chat/anthropic-claude-sonnet-4",
+                "google/gemini-2.5-pro",
+                "token2chat/openai-gpt-4o",
+              ],
+            },
+          },
+        },
+      };
+      vi.mocked(fs.readFile).mockImplementation(async (p) => {
+        if (String(p).includes("openclaw.json")) {
+          return JSON.stringify(openclawConfig);
+        }
+        throw new Error("ENOENT");
+      });
+
+      await uninstallCommand({ yes: true, removeOpenclaw: true });
+
+      const writeCalls = vi.mocked(fs.writeFile).mock.calls;
+      const openclawWrite = writeCalls.find(c => String(c[0]).includes("openclaw.json"));
+      expect(openclawWrite).toBeDefined();
+
+      const written = JSON.parse(openclawWrite![1] as string);
+      expect(written.agents.defaults.model.fallbacks).toEqual(["google/gemini-2.5-pro"]);
+    });
+
+    it("removes token2chat provider from per-agent models.json", async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.readdir).mockImplementation(async (p) => {
+        const s = String(p);
+        if (s.endsWith(".t2c") || s.endsWith("t2c-test/.t2c")) return ["config.json"] as any;
+        if (s.endsWith("/agents")) return ["jobs", "refiner"] as any;
+        return [] as any;
+      });
+
+      const agentModelsConfig = {
+        providers: {
+          token2chat: { baseUrl: "http://127.0.0.1:10402/v1", models: [] },
+          dashscope: { baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+        },
+      };
+      vi.mocked(fs.readFile).mockImplementation(async (p) => {
+        const s = String(p);
+        if (s.includes("openclaw.json")) return JSON.stringify({});
+        if (s.includes("models.json")) return JSON.stringify(agentModelsConfig);
+        throw new Error("ENOENT");
+      });
+
+      await uninstallCommand({ yes: true, removeOpenclaw: true });
+
+      const writeCalls = vi.mocked(fs.writeFile).mock.calls;
+      const modelsWrites = writeCalls.filter(c => String(c[0]).includes("models.json"));
+      expect(modelsWrites.length).toBeGreaterThanOrEqual(2);
+
+      for (const [, content] of modelsWrites) {
+        const written = JSON.parse(content as string);
+        expect(written.providers.token2chat).toBeUndefined();
+        expect(written.providers.dashscope).toBeDefined();
+      }
+    });
+
+    it("removes token2chat auth profiles from per-agent auth-profiles.json", async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.readdir).mockImplementation(async (p) => {
+        const s = String(p);
+        if (s.endsWith(".t2c") || s.endsWith("t2c-test/.t2c")) return ["config.json"] as any;
+        if (s.endsWith("/agents")) return ["main"] as any;
+        return [] as any;
+      });
+
+      const authConfig = {
+        profiles: {
+          "anthropic:manual": { provider: "anthropic", mode: "token", token: "sk-ant-xxx" },
+          "token2chat:local": { provider: "token2chat", type: "token", token: "t2c-xxx" },
+        },
+      };
+      vi.mocked(fs.readFile).mockImplementation(async (p) => {
+        const s = String(p);
+        if (s.includes("openclaw.json")) return JSON.stringify({});
+        if (s.includes("auth-profiles.json")) return JSON.stringify(authConfig);
+        throw new Error("ENOENT");
+      });
+
+      await uninstallCommand({ yes: true, removeOpenclaw: true });
+
+      const writeCalls = vi.mocked(fs.writeFile).mock.calls;
+      const authWrite = writeCalls.find(c => String(c[0]).includes("auth-profiles.json"));
+      expect(authWrite).toBeDefined();
+
+      const written = JSON.parse(authWrite![1] as string);
+      expect(written.profiles["token2chat:local"]).toBeUndefined();
+      expect(written.profiles["anthropic:manual"]).toBeDefined();
     });
 
     it("does NOT touch openclaw.json when --remove-openclaw is not set", async () => {

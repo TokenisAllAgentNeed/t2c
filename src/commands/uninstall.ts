@@ -197,15 +197,19 @@ async function stopProxyViaPid(): Promise<void> {
 }
 
 /**
- * Remove token2chat provider from OpenClaw config.
+ * Remove token2chat provider from OpenClaw global config (openclaw.json).
+ * Also removes token2chat entries from agents.defaults.model.fallbacks.
  */
-async function removeOpenClawIntegration(): Promise<boolean> {
+async function removeOpenClawGlobalConfig(): Promise<boolean> {
   try {
     const raw = await fs.readFile(OPENCLAW_CONFIG_PATH, "utf-8");
     const config = JSON.parse(raw);
+    let changed = false;
 
+    // Remove models.providers.token2chat
     if (config?.models?.providers?.token2chat) {
       delete config.models.providers.token2chat;
+      changed = true;
 
       // If providers is now empty, clean up
       if (Object.keys(config.models.providers).length === 0) {
@@ -215,14 +219,104 @@ async function removeOpenClawIntegration(): Promise<boolean> {
       if (config.models && Object.keys(config.models).length === 0) {
         delete config.models;
       }
-
-      await fs.writeFile(OPENCLAW_CONFIG_PATH, JSON.stringify(config, null, 2));
-      return true;
     }
-    return false;
+
+    // Remove token2chat entries from agents.defaults.model.fallbacks
+    const fallbacks = config?.agents?.defaults?.model?.fallbacks;
+    if (Array.isArray(fallbacks)) {
+      const filtered = fallbacks.filter(
+        (f: string) => typeof f !== "string" || !f.startsWith("token2chat/"),
+      );
+      if (filtered.length !== fallbacks.length) {
+        config.agents.defaults.model.fallbacks = filtered;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await fs.writeFile(OPENCLAW_CONFIG_PATH, JSON.stringify(config, null, 2));
+    }
+    return changed;
   } catch {
     return false;
   }
+}
+
+/**
+ * Remove token2chat provider from all per-agent models.json files
+ * and token2chat auth profiles from auth-profiles.json files.
+ *
+ * Scans ~/.openclaw/agents/{name}/models.json and ~/.openclaw/agents/{name}/agent/auth-profiles.json
+ */
+async function removeOpenClawAgentConfigs(): Promise<string[]> {
+  const actions: string[] = [];
+  const agentsDir = path.join(os.homedir(), ".openclaw", "agents");
+
+  let agents: string[];
+  try {
+    agents = await fs.readdir(agentsDir);
+  } catch {
+    return actions;
+  }
+
+  for (const agent of agents) {
+    // Clean models.json at both levels: agents/{name}/models.json AND agents/{name}/agent/models.json
+    const modelsPaths = [
+      path.join(agentsDir, agent, "models.json"),
+      path.join(agentsDir, agent, "agent", "models.json"),
+    ];
+    for (const modelsPath of modelsPaths) {
+      try {
+        const raw = await fs.readFile(modelsPath, "utf-8");
+        const config = JSON.parse(raw);
+        if (config?.providers?.token2chat) {
+          delete config.providers.token2chat;
+          await fs.writeFile(modelsPath, JSON.stringify(config, null, 2) + "\n");
+          const rel = modelsPath.replace(agentsDir + path.sep, "");
+          actions.push(`Removed token2chat provider from ${rel}`);
+        }
+      } catch {
+        // File doesn't exist or isn't valid JSON — skip
+      }
+    }
+
+    // Clean agent/auth-profiles.json
+    const authPath = path.join(agentsDir, agent, "agent", "auth-profiles.json");
+    try {
+      const raw = await fs.readFile(authPath, "utf-8");
+      const authConfig = JSON.parse(raw);
+      const profiles = authConfig?.profiles;
+      if (profiles && typeof profiles === "object") {
+        let changed = false;
+        for (const key of Object.keys(profiles)) {
+          if (key === "token2chat:local" || profiles[key]?.provider === "token2chat") {
+            delete profiles[key];
+            changed = true;
+          }
+        }
+        if (changed) {
+          await fs.writeFile(authPath, JSON.stringify(authConfig, null, 2) + "\n");
+          actions.push(`Removed token2chat auth profile from ${agent}/agent/auth-profiles.json`);
+        }
+      }
+    } catch {
+      // skip
+    }
+  }
+
+  return actions;
+}
+
+/**
+ * Remove all token2chat integration from OpenClaw:
+ * - Global config (models.providers + fallbacks)
+ * - Per-agent models.json
+ * - Per-agent auth-profiles.json
+ */
+async function removeOpenClawIntegration(): Promise<{ global: boolean; agentActions: string[] }> {
+  const global = await removeOpenClawGlobalConfig();
+  const agentActions = await removeOpenClawAgentConfigs();
+  return { global, agentActions };
 }
 
 export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
@@ -268,7 +362,11 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
   }
 
   if (opts.removeOpenclaw) {
-    console.log("\n  🔌 OpenClaw: token2chat provider will be removed from openclaw.json");
+    console.log("\n  🔌 OpenClaw:");
+    console.log("     - token2chat provider from openclaw.json");
+    console.log("     - token2chat fallbacks from agents.defaults");
+    console.log("     - token2chat provider from per-agent models.json");
+    console.log("     - token2chat auth profiles from per-agent auth-profiles.json");
   }
 
   // Always show wallet preservation notice
@@ -307,11 +405,17 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
 
   // 3. Remove OpenClaw integration if requested
   if (opts.removeOpenclaw) {
-    const removed = await removeOpenClawIntegration();
-    if (removed) {
-      console.log("  ✓ Removed token2chat provider from OpenClaw config");
+    const { global: globalRemoved, agentActions } = await removeOpenClawIntegration();
+    if (globalRemoved) {
+      console.log("  ✓ Removed token2chat from OpenClaw global config");
     } else {
-      console.log("  ℹ OpenClaw: no token2chat provider found (or config not present)");
+      console.log("  ℹ OpenClaw: no token2chat provider in global config");
+    }
+    for (const action of agentActions) {
+      console.log(`  ✓ ${action}`);
+    }
+    if (!globalRemoved && agentActions.length === 0) {
+      console.log("  ℹ OpenClaw: no token2chat residue found");
     }
   }
 
