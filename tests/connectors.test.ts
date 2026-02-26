@@ -197,8 +197,18 @@ describe("OpenClawConnector", () => {
     expect(config.plugins?.entries?.token2chat).toBeUndefined();
   });
 
-  it("connect() sets agents.defaults.models and model.fallbacks", async () => {
-    await fs.writeFile(configPath, "{}");
+  it("connect() does NOT modify agents.defaults (preserves existing routing)", async () => {
+    const existingConfig = {
+      agents: {
+        defaults: {
+          model: {
+            primary: "anthropic/claude-opus-4-6",
+            fallbacks: ["anthropic/claude-opus-4-5", "google/gemini-2.5-pro"],
+          },
+        },
+      },
+    };
+    await fs.writeFile(configPath, JSON.stringify(existingConfig, null, 2));
 
     const { openclawConnector } = await import("../src/connectors/openclaw.js");
     await openclawConnector.connect(testConfig);
@@ -206,11 +216,15 @@ describe("OpenClawConnector", () => {
     const content = await fs.readFile(configPath, "utf-8");
     const config = JSON.parse(content);
 
-    expect(config.agents?.defaults?.models).toBeDefined();
-    expect(Array.isArray(config.agents.defaults.models)).toBe(true);
-    expect(config.agents.defaults.models.length).toBeGreaterThan(0);
-    expect(config.agents?.defaults?.model?.fallbacks).toBeDefined();
-    expect(Array.isArray(config.agents.defaults.model.fallbacks)).toBe(true);
+    // Primary model untouched
+    expect(config.agents.defaults.model.primary).toBe("anthropic/claude-opus-4-6");
+    // Fallbacks untouched — not replaced with token2chat models
+    expect(config.agents.defaults.model.fallbacks).toEqual([
+      "anthropic/claude-opus-4-5",
+      "google/gemini-2.5-pro",
+    ]);
+    // No models allowlist injected
+    expect(config.agents.defaults.models).toBeUndefined();
   });
 
   it("connect() shows wallet balance (or not-found) in output", async () => {

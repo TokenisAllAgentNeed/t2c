@@ -81,9 +81,10 @@ async function getConfigPath(): Promise<string> {
 
 /**
  * Merge Token2Chat configuration into existing OpenClaw config.
- * Handles:
- * - Arrays and nested objects
- * - Existing token2chat config (overwrites, doesn't duplicate)
+ *
+ * Only adds the token2chat models provider — does NOT modify
+ * agents.defaults.model or agents.defaults.models so existing
+ * primary/fallback routing is preserved.
  */
 function mergeToken2ChatConfig(
   existingConfig: Record<string, unknown>,
@@ -113,23 +114,9 @@ function mergeToken2ChatConfig(
     models: activeModels,
   };
 
-  // Set up agents.defaults with token2chat model allowlist and fallbacks
-  if (!config.agents || typeof config.agents !== "object") {
-    config.agents = {};
-  }
-  const agents = config.agents as Record<string, unknown>;
-  if (!agents.defaults || typeof agents.defaults !== "object") {
-    agents.defaults = {};
-  }
-  const defaults = agents.defaults as Record<string, unknown>;
-  const modelIds = activeModels.map((m) => m.id);
-  defaults.models = modelIds;
-  defaults.model = {
-    ...(typeof defaults.model === "object" && defaults.model !== null
-      ? (defaults.model as Record<string, unknown>)
-      : {}),
-    fallbacks: modelIds,
-  };
+  // Do NOT touch agents.defaults — the user's primary model and
+  // fallback chain should stay intact. Token2Chat models are available
+  // via the "token2chat/" provider prefix (e.g. token2chat/anthropic-claude-sonnet-4).
 
   return config;
 }
@@ -218,13 +205,23 @@ export const openclawConnector: Connector = {
       console.log(`   Mint URL: ${config.mintUrl}`);
     }
 
+    // Show available model IDs for easy copy-paste
+    const activeModels = gateModels.length > 0 ? gateModels : DEFAULT_MODELS;
+    const modelList = activeModels.map((m) => `token2chat/${m.id}`);
+
     console.log("\n📋 Next steps:\n");
     console.log("   1. Restart OpenClaw gateway:");
     console.log("      openclaw gateway restart\n");
-    console.log("   2. Start the t2c proxy:");
+    console.log("   2. Make sure the t2c proxy is running:");
     console.log("      t2c service start\n");
-    console.log("   3. Use Token2Chat models with:");
-    console.log("      token2chat/anthropic-claude-sonnet-4\n");
+    console.log("   3. Use Token2Chat models (via provider prefix):");
+    for (const mid of modelList) {
+      console.log(`      ${mid}`);
+    }
+    console.log("");
+    console.log("   4. (Optional) Add as fallback in openclaw.json:");
+    console.log('      agents.defaults.model.fallbacks → ["token2chat/anthropic-claude-sonnet-4", ...]');
+    console.log("");
   },
 
   async verify(): Promise<boolean> {
