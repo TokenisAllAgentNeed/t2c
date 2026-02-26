@@ -210,7 +210,7 @@ export async function scanDeposits(
             amount,
             decimals: token.decimals,
             token: token.symbol,
-            chain: chain.name,
+            chain: chain.name.toLowerCase(),
             blockNumber: hexToNumber(log.blockNumber),
           });
         }

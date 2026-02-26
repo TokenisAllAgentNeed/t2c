@@ -208,7 +208,7 @@ describe("chain-scan", () => {
       expect(deposits).toHaveLength(1);
       expect(deposits[0].amount).toBe(1000000);
       expect(deposits[0].token).toBe("USDC");
-      expect(deposits[0].chain).toBe("Base");
+      expect(deposits[0].chain).toBe("base");
       expect(deposits[0].decimals).toBe(6);
       expect(deposits[0].blockNumber).toBe(changeBlock);
     });

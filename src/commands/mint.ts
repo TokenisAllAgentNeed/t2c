@@ -165,8 +165,11 @@ async function handleUsdc(wallet: CashuStore, mintUrl: string): Promise<void> {
     selected = deposits[idx];
   }
 
-  // 3. Calculate ecash units
+  // 3. Calculate amounts
+  // ecash units for minting proofs (1 USDC = 100,000 units)
   const ecashUnits = baseUnitsToEcashUnits(selected.amount, selected.decimals);
+  // token amount for mint quote (1 USDC = 1.0, mint multiplies by USDC_RATE internally)
+  const tokenAmount = selected.amount / Math.pow(10, selected.decimals);
   if (ecashUnits <= 0) {
     console.error("Deposit amount too small to mint.");
     process.exit(1);
@@ -175,12 +178,12 @@ async function handleUsdc(wallet: CashuStore, mintUrl: string): Promise<void> {
 
   console.log(`Requesting mint quote for ${formatUnits(ecashUnits)}...\n`);
 
-  // 4. Get quote from mint
+  // 4. Get quote from mint (amount in token units, e.g. 1 = $1.00)
   const quoteRes = await fetch(`${mintUrl}/v1/mint/quote`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      amount: ecashUnits,
+      amount: tokenAmount,
       chain: selected.chain,
       token: selected.token,
     }),
