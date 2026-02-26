@@ -111,6 +111,7 @@ function mergeToken2ChatConfig(
     baseUrl: `http://127.0.0.1:${t2cConfig.proxyPort}/v1`,
     apiKey,
     api: "openai-completions",
+    authHeader: true,
     models: activeModels,
   };
 
@@ -119,6 +120,70 @@ function mergeToken2ChatConfig(
   // via the "token2chat/" provider prefix (e.g. token2chat/anthropic-claude-sonnet-4).
 
   return config;
+}
+
+/**
+ * Sync Token2Chat credentials into OpenClaw auth-profiles.json.
+ *
+ * Finds any profile keyed "token2chat:local" or with provider === "token2chat"
+ * and updates its token. If none exists, adds "token2chat:local".
+ * Other profiles are preserved.
+ */
+async function syncAuthProfiles(apiKey: string): Promise<void> {
+  const authProfilesPath = path.join(
+    os.homedir(),
+    OPENCLAW_CONFIG_DIR,
+    "agents",
+    "main",
+    "agent",
+    "auth-profiles.json",
+  );
+
+  let authProfiles: Record<string, unknown>;
+  try {
+    const raw = await fs.readFile(authProfilesPath, "utf-8");
+    authProfiles = JSON.parse(raw) as Record<string, unknown>;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      console.log("   ℹ️  auth-profiles.json not found, skipping auth sync");
+      return;
+    }
+    console.warn(`   ⚠️  Failed to read auth-profiles.json: ${(e as Error).message}`);
+    return;
+  }
+
+  const profiles = authProfiles.profiles as Record<string, Record<string, unknown>> | undefined;
+  if (!profiles || typeof profiles !== "object") {
+    console.warn("   ⚠️  auth-profiles.json has no 'profiles' object, skipping");
+    return;
+  }
+
+  let updated = false;
+  for (const [key, profile] of Object.entries(profiles)) {
+    if (key === "token2chat:local" || profile?.provider === "token2chat") {
+      profiles[key] = { ...profile, token: apiKey };
+      updated = true;
+    }
+  }
+
+  if (!updated) {
+    profiles["token2chat:local"] = {
+      type: "token",
+      provider: "token2chat",
+      token: apiKey,
+    };
+  }
+
+  // Backup and write
+  try {
+    const existing = await fs.readFile(authProfilesPath, "utf-8");
+    await fs.writeFile(`${authProfilesPath}.backup.${Date.now()}`, existing);
+  } catch {
+    // OK
+  }
+
+  await fs.writeFile(authProfilesPath, JSON.stringify(authProfiles, null, 2) + "\n");
+  console.log("   ✅ auth-profiles.json synced (token2chat token updated)");
 }
 
 export const openclawConnector: Connector = {
@@ -189,6 +254,9 @@ export const openclawConnector: Connector = {
 
     // Write new config
     await fs.writeFile(configPath, newContent);
+
+    // Sync auth-profiles.json so the gateway uses the correct proxy-secret
+    await syncAuthProfiles(apiKey);
 
     console.log("✅ OpenClaw configured for Token2Chat\n");
     console.log(`   Config: ${configPath}`);

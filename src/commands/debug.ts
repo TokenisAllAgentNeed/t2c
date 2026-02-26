@@ -155,7 +155,7 @@ async function forceToken2Chat(): Promise<void> {
       baseUrl: `http://127.0.0.1:${t2cConfig.proxyPort}/v1`,
       apiKey: await loadOrCreateProxySecret(),
       api: "openai-completions",
-      authHeader: false,
+      authHeader: true,
       models: T2C_MODELS.map((m) => ({
         id: m.id,
         name: m.name,

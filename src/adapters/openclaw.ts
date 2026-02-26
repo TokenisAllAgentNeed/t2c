@@ -44,7 +44,7 @@ function generateOpenClawConfig(t2cConfig: T2CConfig, apiKey: string): object {
           baseUrl: `http://127.0.0.1:${t2cConfig.proxyPort}/v1`,
           apiKey,
           api: "openai-completions",
-          authHeader: false,
+          authHeader: true,
           models: GATE_MODELS.map((m) => ({
             id: m.id,
             name: m.name,
@@ -113,6 +113,76 @@ function mergeDeep(
   return result;
 }
 
+/**
+ * Sync Token2Chat credentials into OpenClaw auth-profiles.json.
+ *
+ * Looks for an existing profile keyed "token2chat:local" or any profile
+ * with provider === "token2chat". Updates its token to the current
+ * proxy-secret. If none exists, adds "token2chat:local".
+ *
+ * Other profiles are left untouched.
+ */
+async function syncAuthProfiles(apiKey: string): Promise<void> {
+  const authProfilesPath = path.join(
+    os.homedir(),
+    ".openclaw",
+    "agents",
+    "main",
+    "agent",
+    "auth-profiles.json",
+  );
+
+  let authProfiles: Record<string, unknown>;
+  try {
+    const raw = await fs.readFile(authProfilesPath, "utf-8");
+    authProfiles = JSON.parse(raw) as Record<string, unknown>;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      // File doesn't exist — nothing to sync (OpenClaw not fully initialised)
+      console.log("   ℹ️  auth-profiles.json not found, skipping auth sync");
+      return;
+    }
+    console.warn(`   ⚠️  Failed to read auth-profiles.json: ${(e as Error).message}`);
+    return;
+  }
+
+  const profiles = authProfiles.profiles as Record<string, Record<string, unknown>> | undefined;
+  if (!profiles || typeof profiles !== "object") {
+    console.warn("   ⚠️  auth-profiles.json has no 'profiles' object, skipping auth sync");
+    return;
+  }
+
+  // Find existing token2chat profile(s)
+  let updated = false;
+  for (const [key, profile] of Object.entries(profiles)) {
+    if (key === "token2chat:local" || profile?.provider === "token2chat") {
+      profiles[key] = { ...profile, token: apiKey };
+      updated = true;
+    }
+  }
+
+  // If no token2chat profile exists, create one
+  if (!updated) {
+    profiles["token2chat:local"] = {
+      type: "token",
+      provider: "token2chat",
+      token: apiKey,
+    };
+  }
+
+  // Backup and write
+  try {
+    const backup = `${authProfilesPath}.backup.${Date.now()}`;
+    const existing = await fs.readFile(authProfilesPath, "utf-8");
+    await fs.writeFile(backup, existing);
+  } catch {
+    // OK — may not exist
+  }
+
+  await fs.writeFile(authProfilesPath, JSON.stringify(authProfiles, null, 2) + "\n");
+  console.log("   ✅ auth-profiles.json synced (token2chat token updated)");
+}
+
 export async function openclawAdapter(t2cConfig: T2CConfig, opts: AdapterConfigOptions): Promise<void> {
   const apiKey = opts.proxySecret ?? "t2c-local";
   const patch = generateOpenClawConfig(t2cConfig, apiKey);
@@ -173,7 +243,10 @@ export async function openclawAdapter(t2cConfig: T2CConfig, opts: AdapterConfigO
       console.error("   A backup was created before modification.");
     }
 
-    console.log("Token2Chat provider added. To use it:\n");
+    // Sync auth-profiles.json so OpenClaw's gateway uses the correct proxy-secret
+    await syncAuthProfiles(apiKey);
+
+    console.log("\nToken2Chat provider added. To use it:\n");
     console.log("  1. Restart the gateway:");
     console.log("     openclaw gateway restart\n");
     console.log("  2. Set as default model (optional):");
