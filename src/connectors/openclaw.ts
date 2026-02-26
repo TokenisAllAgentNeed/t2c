@@ -6,7 +6,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { type T2CConfig, loadOrCreateProxySecret } from "../config.js";
+import { type T2CConfig, loadOrCreateProxySecret, WALLET_PATH, formatUnits } from "../config.js";
+import { CashuStore } from "../cashu-store.js";
 import type { Connector } from "./interface.js";
 
 /** Model entry for OpenClaw models.providers.*.models */
@@ -104,11 +105,30 @@ function mergeToken2ChatConfig(
   const providers = models.providers as Record<string, unknown>;
 
   // Set/overwrite token2chat provider config
+  const activeModels = gateModels.length > 0 ? gateModels : DEFAULT_MODELS;
   providers.token2chat = {
     baseUrl: `http://127.0.0.1:${t2cConfig.proxyPort}/v1`,
     apiKey,
     api: "openai-completions",
-    models: gateModels.length > 0 ? gateModels : DEFAULT_MODELS,
+    models: activeModels,
+  };
+
+  // Set up agents.defaults with token2chat model allowlist and fallbacks
+  if (!config.agents || typeof config.agents !== "object") {
+    config.agents = {};
+  }
+  const agents = config.agents as Record<string, unknown>;
+  if (!agents.defaults || typeof agents.defaults !== "object") {
+    agents.defaults = {};
+  }
+  const defaults = agents.defaults as Record<string, unknown>;
+  const modelIds = activeModels.map((m) => m.id);
+  defaults.models = modelIds;
+  defaults.model = {
+    ...(typeof defaults.model === "object" && defaults.model !== null
+      ? (defaults.model as Record<string, unknown>)
+      : {}),
+    fallbacks: modelIds,
   };
 
   return config;
@@ -188,6 +208,16 @@ export const openclawConnector: Connector = {
     if (existingContent) {
       console.log(`   Backup: ${backupPath}`);
     }
+    // Show wallet balance for onboarding
+    try {
+      const wallet = await CashuStore.load(WALLET_PATH, config.mintUrl);
+      console.log(`\n💰 Wallet balance: ${formatUnits(wallet.balance)}`);
+    } catch {
+      console.log("\n💰 Wallet: not funded yet");
+      console.log(`   Fund your wallet: t2c mint <amount>`);
+      console.log(`   Mint URL: ${config.mintUrl}`);
+    }
+
     console.log("\n📋 Next steps:\n");
     console.log("   1. Restart OpenClaw gateway:");
     console.log("      openclaw gateway restart\n");

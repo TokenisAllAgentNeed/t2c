@@ -197,6 +197,39 @@ describe("OpenClawConnector", () => {
     expect(config.plugins?.entries?.token2chat).toBeUndefined();
   });
 
+  it("connect() sets agents.defaults.models and model.fallbacks", async () => {
+    await fs.writeFile(configPath, "{}");
+
+    const { openclawConnector } = await import("../src/connectors/openclaw.js");
+    await openclawConnector.connect(testConfig);
+
+    const content = await fs.readFile(configPath, "utf-8");
+    const config = JSON.parse(content);
+
+    expect(config.agents?.defaults?.models).toBeDefined();
+    expect(Array.isArray(config.agents.defaults.models)).toBe(true);
+    expect(config.agents.defaults.models.length).toBeGreaterThan(0);
+    expect(config.agents?.defaults?.model?.fallbacks).toBeDefined();
+    expect(Array.isArray(config.agents.defaults.model.fallbacks)).toBe(true);
+  });
+
+  it("connect() shows wallet balance (or not-found) in output", async () => {
+    await fs.writeFile(configPath, "{}");
+
+    const { openclawConnector } = await import("../src/connectors/openclaw.js");
+
+    let logOutput = "";
+    const origLog = console.log;
+    console.log = (...args) => { logOutput += args.join(" ") + "\n"; };
+
+    await openclawConnector.connect(testConfig);
+
+    console.log = origLog;
+
+    // Should show wallet section (balance or not-found message)
+    expect(logOutput).toMatch(/wallet/i);
+  });
+
   it("connect() preserves existing config entries", async () => {
     // Create config with existing data
     await fs.writeFile(configPath, JSON.stringify({
