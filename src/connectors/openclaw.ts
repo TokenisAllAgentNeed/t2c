@@ -92,28 +92,6 @@ function mergeToken2ChatConfig(
 ): Record<string, unknown> {
   const config = { ...existingConfig };
 
-  // Ensure plugins.entries exists
-  if (!config.plugins || typeof config.plugins !== "object") {
-    config.plugins = {};
-  }
-  const plugins = config.plugins as Record<string, unknown>;
-
-  if (!plugins.entries || typeof plugins.entries !== "object") {
-    plugins.entries = {};
-  }
-  const entries = plugins.entries as Record<string, unknown>;
-
-  // Set/overwrite token2chat plugin config
-  entries.token2chat = {
-    enabled: true,
-    config: {
-      gateUrl: t2cConfig.gateUrl,
-      mintUrl: t2cConfig.mintUrl,
-      proxyPort: t2cConfig.proxyPort,
-      walletPath: t2cConfig.walletPath,
-    },
-  };
-
   // Ensure models.providers exists
   if (!config.models || typeof config.models !== "object") {
     config.models = {};
@@ -225,13 +203,9 @@ export const openclawConnector: Connector = {
       const configPath = await getConfigPath();
       const content = await fs.readFile(configPath, "utf-8");
       const doc = JSON.parse(content) as Record<string, unknown>;
-      const plugins = doc?.plugins as Record<string, unknown> | undefined;
-      const entries = plugins?.entries as Record<string, unknown> | undefined;
       const models = doc?.models as Record<string, unknown> | undefined;
       const providers = models?.providers as Record<string, unknown> | undefined;
-      return (
-        entries?.token2chat !== undefined && providers?.token2chat !== undefined
-      );
+      return providers?.token2chat !== undefined;
     } catch {
       return false;
     }

@@ -65,7 +65,7 @@ describe("OpenClawConnector", () => {
     expect(detected).toBe(false);
   });
 
-  it("connect() creates clawdbot.json with correct plugin config", async () => {
+  it("connect() creates clawdbot.json with correct models provider config", async () => {
     // Create empty config first
     await fs.writeFile(configPath, "{}");
 
@@ -74,16 +74,9 @@ describe("OpenClawConnector", () => {
 
     const content = await fs.readFile(configPath, "utf-8");
     const config = JSON.parse(content);
-    
-    // Check plugin config
-    expect(config.plugins).toBeDefined();
-    expect(config.plugins.entries).toBeDefined();
-    expect(config.plugins.entries.token2chat).toBeDefined();
-    expect(config.plugins.entries.token2chat.enabled).toBe(true);
-    expect(config.plugins.entries.token2chat.config.gateUrl).toBe(testConfig.gateUrl);
-    expect(config.plugins.entries.token2chat.config.mintUrl).toBe(testConfig.mintUrl);
-    expect(config.plugins.entries.token2chat.config.proxyPort).toBe(testConfig.proxyPort);
-    expect(config.plugins.entries.token2chat.config.walletPath).toBe(testConfig.walletPath);
+
+    // Ghost plugin entry must NOT be written
+    expect(config.plugins?.entries?.token2chat).toBeUndefined();
 
     // Check models provider config
     expect(config.models).toBeDefined();
@@ -123,7 +116,6 @@ describe("OpenClawConnector", () => {
 
   it("verify() returns true when config has token2chat entries", async () => {
     const configContent = {
-      plugins: { entries: { token2chat: { enabled: true } } },
       models: { providers: { token2chat: { baseUrl: "http://test" } } },
     };
     await fs.writeFile(configPath, JSON.stringify(configContent));
@@ -192,6 +184,19 @@ describe("OpenClawConnector", () => {
     expect(models.some((m: any) => m.id === "*")).toBe(false);
   });
 
+  it("connect() does NOT write plugins.entries.token2chat (ghost plugin removed)", async () => {
+    await fs.writeFile(configPath, "{}");
+
+    const { openclawConnector } = await import("../src/connectors/openclaw.js");
+    await openclawConnector.connect(testConfig);
+
+    const content = await fs.readFile(configPath, "utf-8");
+    const config = JSON.parse(content);
+
+    // Ghost plugin entry must not be injected — OpenClaw has no token2chat plugin
+    expect(config.plugins?.entries?.token2chat).toBeUndefined();
+  });
+
   it("connect() preserves existing config entries", async () => {
     // Create config with existing data
     await fs.writeFile(configPath, JSON.stringify({
@@ -206,15 +211,15 @@ describe("OpenClawConnector", () => {
 
     const content = await fs.readFile(configPath, "utf-8");
     const config = JSON.parse(content);
-    
+
     // Original config preserved
     expect(config.agent).toBeDefined();
     expect(config.agent.name).toBe("MyAgent");
     expect(config.agent.model).toBe("claude-sonnet-4");
-    
-    // New config added
-    expect(config.plugins).toBeDefined();
-    expect(config.plugins.entries.token2chat).toBeDefined();
+
+    // New config added (models provider, no ghost plugin entry)
+    expect(config.models.providers.token2chat).toBeDefined();
+    expect(config.plugins?.entries?.token2chat).toBeUndefined();
   });
 });
 
