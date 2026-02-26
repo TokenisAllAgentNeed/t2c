@@ -1,6 +1,7 @@
 /**
  * PricingCache - Caches model pricing from Gate with TTL.
  */
+import { transformModelId } from "./types.js";
 
 export interface PricingCacheOptions {
   ttlMs?: number;
@@ -92,7 +93,8 @@ export class PricingCache {
     if (!this.cache) {
       return defaultPrice;
     }
-    const rule = this.cache[model] ?? this.cache["*"];
+    // Try exact match, then slash format (dash→slash), then wildcard
+    const rule = this.cache[model] ?? this.cache[transformModelId(model)] ?? this.cache["*"];
     if (!rule) return defaultPrice;
     if (rule.mode === "per_request" && rule.per_request != null) {
       return rule.per_request;
@@ -110,7 +112,8 @@ export class PricingCache {
     if (!this.cache) {
       return DEFAULT_PRICE;
     }
-    const rule = this.cache[model] ?? this.cache["*"];
+    // Try exact match, then slash format (dash→slash), then wildcard
+    const rule = this.cache[model] ?? this.cache[transformModelId(model)] ?? this.cache["*"];
     if (!rule) return DEFAULT_PRICE;
 
     if (rule.mode === "per_request" && rule.per_request != null) {

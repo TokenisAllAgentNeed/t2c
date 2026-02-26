@@ -239,6 +239,31 @@ describe("PricingCache", () => {
       expect(price).not.toBe(500); // definitely not the default
     });
 
+    it("matches dash-format model IDs to slash-format cache keys", async () => {
+      // Gate returns slash format, OpenClaw sends dash format
+      mockFetch.mockResolvedValueOnce(
+        mockPerTokenResponse({
+          "anthropic/claude-opus-4-20250514": { input_per_million: 1500000, output_per_million: 7500000 },
+          "*": { input_per_million: 100000, output_per_million: 500000 },
+        })
+      );
+
+      const cache = createCache();
+      await cache.refresh();
+
+      // Request with dash format (as OpenClaw sends)
+      const price = cache.estimatePrice("anthropic-claude-opus-4-20250514", {
+        messages: [{ role: "user", content: "Hello" }],
+        max_tokens: 4096,
+      });
+
+      // Should use Opus pricing (1.5M/7.5M), NOT wildcard (100K/500K)
+      expect(price).toBeGreaterThanOrEqual(30000);
+
+      // Wildcard would give ~2148 units
+      expect(price).toBeGreaterThan(5000);
+    });
+
     it("returns fixed price for per_request pricing", async () => {
       mockFetch.mockResolvedValueOnce(mockPerRequestResponse({ "fixed-model": 42 }));
 
