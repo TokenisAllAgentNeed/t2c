@@ -197,7 +197,7 @@ export class CashuStore {
   private async getCashuWallet(): Promise<CashuWallet> {
     if (!this.wallet) {
       const m = new CashuMint(this.data.mint);
-      this.wallet = new CashuWallet(m);
+      this.wallet = new CashuWallet(m, { unit: this.data.unit });
       await this.wallet.loadMint();
     }
     return this.wallet;

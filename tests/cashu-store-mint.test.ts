@@ -29,6 +29,7 @@ vi.mock("@cashu/cashu-ts", () => ({
 }));
 
 import { CashuStore } from "../src/cashu-store.js";
+import { CashuWallet } from "@cashu/cashu-ts";
 
 describe("CashuStore mint operations", () => {
   const testDir = "/tmp/t2c-cashu-mint-test-" + Date.now() + "-" + Math.random().toString(36).slice(2);
@@ -61,6 +62,21 @@ describe("CashuStore mint operations", () => {
     await fs.writeFile(testWalletPath, JSON.stringify(walletData));
     return CashuStore.load(testWalletPath);
   }
+
+  describe("CashuWallet initialization", () => {
+    it("passes unit from wallet data to CashuWallet constructor", async () => {
+      const wallet = await createWallet();
+      // Trigger lazy wallet init
+      mockReceive.mockResolvedValue([]);
+      await wallet.receiveToken("cashuBtest");
+
+      // CashuWallet should have been constructed with { unit: "usd" }
+      expect(CashuWallet).toHaveBeenCalledWith(
+        expect.anything(), // CashuMint instance
+        expect.objectContaining({ unit: "usd" }),
+      );
+    });
+  });
 
   describe("receiveToken", () => {
     it("receives token and adds proofs to wallet", async () => {
