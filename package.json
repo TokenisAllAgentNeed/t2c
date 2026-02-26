@@ -1,6 +1,6 @@
 {
   "name": "@token2chat/t2c",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "license": "MIT",
   "description": "t2c - Pay-per-request LLM access via Cashu ecash",
